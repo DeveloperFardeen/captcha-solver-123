@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Captcha Solver</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 0; padding: 20px; line-height: 1.45; }
+    header { margin-bottom: 16px; }
+    h1 { font-size: 1.4rem; margin: 0 0 6px; }
+    .subtitle { color: #666; font-size: 0.95rem; }
+    .panel { border: 1px solid #ddd; border-radius: 10px; padding: 14px; margin: 10px 0 20px; background: rgba(0,0,0,0.02); }
+    label { font-weight: 600; }
+    input[type="text"] { width: 100%; max-width: 680px; padding: 10px 12px; border: 1px solid #ccc; border-radius: 8px; font-size: 0.98rem; }
+    button { padding: 10px 14px; border: 0; border-radius: 8px; background: #2563eb; color: white; cursor: pointer; font-weight: 600; margin-right: 8px; }
+    button:disabled { opacity: 0.6; cursor: not-allowed; }
+    .hint { font-size: 0.88rem; color: #666; margin-top: 6px; }
+    .grid { display: grid; gap: 18px; grid-template-columns: 1fr; }
+    @media (min-width: 880px) { .grid { grid-template-columns: 400px 1fr; } }
+    .img-wrap { display: flex; align-items: flex-start; gap: 14px; }
+    .img-box { border: 1px dashed #bbb; border-radius: 8px; padding: 10px; background: white; }
+    .img-box img, .img-box canvas { max-width: 360px; display: block; }
+    .row { margin: 12px 0; }
+    .status { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; background: #0b1021; color: #e3e7ff; padding: 10px; border-radius: 8px; font-size: 0.9rem; white-space: pre-wrap; min-height: 44px; }
+    .result { font-size: 1.2rem; font-weight: 700; }
+    .muted { color: #666; }
+    .badge { font-size: 0.76rem; background: #eef2ff; color: #334155; border: 1px solid #c7d2fe; border-radius: 999px; padding: 3px 8px; display: inline-block; }
+    .inline { display: inline-flex; align-items: center; gap: 8px; }
+    .small { font-size: 0.9rem; }
+    .row-flex { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+    .checkbox { display: inline-flex; align-items: center; gap: 6px; }
+    .footer { margin-top: 24px; font-size: 0.9rem; color: #666; }
+    .time { font-variant-numeric: tabular-nums; }
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Captcha Solver</h1>
+    <div class="subtitle">Pass a captcha image via ?url=... or use the built-in sample. The app displays the image and attempts to solve it within ~15 seconds using on-device OCR.</div>
+  </header>
+
+  <section class="panel">
+    <div class="row"><label for="url">Captcha image URL</label></div>
+    <div class="row">
+      <input id="url" type="text" placeholder="https://example.com/captcha.png" />
+    </div>
+    <div class="row row-flex">
+      <span class="checkbox">
+        <input id="useProxy" type="checkbox" checked />
+        <label for="useProxy" class="small">Use CORS image proxy (recommended)</label>
+      </span>
+      <button id="solveBtn">Solve</button>
+      <button id="sampleBtn" class="secondary">Use sample</button>
+      <span class="badge">Tip</span>
+      <span class="small muted">You can also change the URL bar: ?url=https://.../image.png</span>
+    </div>
+  </section>
+
+  <section class="grid">
+    <div>
+      <div class="row">
+        <div class="muted">Image URL:</div>
+        <div id="shownUrl" class="small"></div>
+      </div>
+
+      <div class="img-wrap">
+        <div class="img-box">
+          <div class="muted small">Captcha</div>
+          <img id="captchaImg" alt="Captcha image" />
+        </div>
+        <div class="img-box">
+          <div class="muted small">Preprocessed</div>
+          <canvas id="procCanvas"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <div class="row">
+        <div class="muted">Status</div>
+        <div id="status" class="status"></div>
+      </div>
+      <div class="row">
+        <div class="muted">Solved text</div>
+        <div id="result" class="result">—</div>
+        <div id="meta" class="muted small">
+          <span id="duration" class="time"></span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="footer">
+    MIT License. OCR via Tesseract.js (runs in your browser).
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+  <script>
+    // Simple sample CAPTCHA generator (used when no ?url is provided)
+    function makeSampleCaptcha() {
+      const text = "AB12C"; // fixed so output is deterministic for demos
+      const w = 200, h = 70;
+      const c = document.createElement('canvas');
+      c.width = w; c.height = h;
+      const ctx = c.getContext('2d');
+
+      // Background noise
+      ctx.fillStyle = '#f2f6ff';
+      ctx.fillRect(0, 0, w, h);
+      for (let i = 0; i < 30; i++) {
+        ctx.fillStyle = `rgba(0,0,0,${Math.random()*0.08})`;
+        ctx.beginPath();
+        ctx.arc(Math.random()*w, Math.random()*h, Math.random()*2.2+0.3, 0, Math.PI*2);
+        ctx.fill();
+      }
+      for (let i = 0; i < 3; i++) {
+        ctx.strokeStyle = `rgba(30,58,138,${0.15 + Math.random()*0.15})`;
+        ctx.lineWidth = 1 + Math.random()*1.5;
+        ctx.beginPath();
+        ctx.moveTo(-10, Math.random()*h);
+        ctx.bezierCurveTo(w*0.3, Math.random()*h, w*0.6, Math.random()*h, w+10, Math.random()*h);
+        ctx.stroke();
+      }
+
+      // Text with slight jitter
+      ctx.font = 'bold 40px Arial';
+      ctx.textBaseline = 'middle';
+      const letterSpacing = 8;
+      let x = 18;
+      for (let i=0;i<text.length;i++) {
+        const jitter = (Math.random()*8)-4;
+        ctx.save();
+        const angle = (Math.random()*0.3) - 0.15;
+        ctx.translate(x, h/2 + jitter);
+        ctx.rotate(angle);
+        ctx.fillStyle = '#1f2937';
+        ctx.fillText(text[i], 0, 0);
+        ctx.restore();
+        x += ctx.measureText(text[i]).width + letterSpacing;
+      }
+
+      // More noise lines
+      for (let i = 0; i < 2; i++) {
+        ctx.strokeStyle = `rgba(0,0,0,${0.15 + Math.random()*0.25})`;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(Math.random()*w, Math.random()*h);
+        ctx.lineTo(Math.random()*w, Math.random()*h);
+        ctx.stroke();
+      }
+
+      return { url: c.toDataURL('image/png'), text };
+    }
+
+    // Utility: get query parameter
+    function getParam(name) {
+      const params = new URLSearchParams(location.search);
+      return params.get(name);
+    }
+
+    function setParam(name, value) {
+      const u = new URL(location.href);
+      if (value) u.searchParams.set(name, value);
+      else u.searchParams.delete(name);
+      history.replaceState({}, '', u.toString());
+    }
+
+    // Build a CORS-friendly proxy URL
+    function proxiedImageUrl(raw) {
+      try {
+        if (!raw) return '';
+        if (raw.startsWith('data:')) return raw;
+        const url = new URL(raw, location.href);
+        // images.weserv.nl expects no protocol
+        const hostAndPath = url.href.replace(/^https?:\/\//i, '');
+        return `https://images.weserv.nl/?url=${encodeURIComponent(hostAndPath)}&n=-1`;
+      } catch {
+        return raw;
+      }
+    }
+
+    // Draw image to canvas with optional scale
+    function drawToCanvas(img, maxHeight = 80) {
+      const scale = Math.min(3, Math.max(1, maxHeight / img.naturalHeight));
+      const w = Math.round(img.naturalWidth * scale);
+      const h = Math.round(img.naturalHeight * scale);
+      const canvas = document.getElementById('procCanvas');
+      canvas.width = w; canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(img, 0, 0, w, h);
+      return canvas;
+    }
+
+    // Otsu thresholding on canvas
+    function binarizeCanvas(canvas) {
+      const ctx = canvas.getContext('2d');
+      const { width: w, height: h } = canvas;
+      const imgData = ctx.getImageData(0, 0, w, h);
+      const d = imgData.data;
+
+      const hist = new Array(256).fill(0);
+      for (let i = 0; i < d.length; i += 4) {
+        const r = d[i], g = d[i+1], b = d[i+2];
+        // luminance
+        const y = Math.max(0, Math.min(255, Math.round(0.299*r + 0.587*g + 0.114*b)));
+        hist[y]++;
+      }
+
+      // Otsu
+      const total = w * h;
+      let sum = 0;
+      for (let i = 0; i < 256; i++) sum += i * hist[i];
+
+      let sumB = 0, wB = 0, maxVar = 0, threshold = 127;
+      for (let t = 0; t < 256; t++) {
+        wB += hist[t];
+        if (wB === 0) continue;
+        const wF = total - wB;
+        if (wF === 0) break;
+        sumB += t * hist[t];
+        const mB = sumB / wB;
+        const mF = (sum - sumB) / wF;
+        const between = wB * wF * (mB - mF) * (mB - mF);
+        if (between > maxVar) {
+          maxVar = between;
+          threshold = t;
+        }
+      }
+
+      // Apply threshold + simple despeckle
+      for (let i = 0; i < d.length; i += 4) {
+        const r = d[i], g = d[i+1], b = d[i+2];
+        const y = Math.round(0.299*r + 0.587*g + 0.114*b);
+        const v = y > threshold ? 255 : 0;
+        d[i] = d[i+1] = d[i+2] = v;
+      }
+      ctx.putImageData(imgData, 0, 0);
+
+      // Optional small dilation to connect broken strokes
+      const dilate = false;
+      if (dilate) {
+        const src = ctx.getImageData(0,0,w,h);
+        const s = src.data, out = ctx.createImageData(w,h), o = out.data;
+        const idx = (x,y) => ((y*w)+x)*4;
+        for (let y=1;y<h-1;y++) {
+          for (let x=1;x<w-1;x++) {
+            let white = false;
+            for (let yy=-1;yy<=1;yy++) for (let xx=-1;xx<=1;xx++) {
+              if (s[idx(x+xx,y+yy)]===255) white = true;
+            }
+            const p = idx(x,y);
+            const v = white ? 255 : 0;
+            o[p]=o[p+1]=o[p+2]=v; o[p+3]=255;
+          }
+        }
+        ctx.putImageData(out,0,0);
+      }
+
+      return canvas;
+    }
+
+    function logStatus(msg) {
+      const el = document.getElementById('status');
+      el.textContent += (el.textContent ? '\n' : '') + msg;
+      el.scrollTop = el.scrollHeight;
+    }
+    function resetStatus() {
+      document.getElementById('status').textContent = '';
+    }
+    function setResult(text) {
+      document.getElementById('result').textContent = text || '—';
+    }
+
+    function cleanText(s) {
+      if (!s) return '';
+      return s.replace(/[^A-Z0-9]/gi, '').toUpperCase();
+    }
+
+    async function recognizeWithTesseract(source, whitelist = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789') {
+      const start = performance.now();
+      resetStatus();
+      logStatus('Loading Tesseract engine...');
+      const { data } = await Tesseract.recognize(source, 'eng', {
+        logger: m => {
+          if (m.status) logStatus(`${m.status} ${m.progress ? Math.round(m.progress*100)+'%' : ''}`.trim());
+        },
+        tessedit_char_whitelist: whitelist,
+        preserve_interword_spaces: '1',
+      });
+      const dur = performance.now() - start;
+      return { text: data.text || '', durationMs: dur, raw: data };
+    }
+
+    async function solve(url, opts = { useProxy: true, knownText: null }) {
+      setResult('—');
+      document.getElementById('duration').textContent = '';
+      resetStatus();
+
+      const img = document.getElementById('captchaImg');
+      const shownUrlEl = document.getElementById('shownUrl');
+      const procCanvas = document.getElementById('procCanvas');
+      const useProxy = !!opts.useProxy;
+
+      // Load image
+      let displayUrl = url;
+      if (!displayUrl) {
+        const sample = makeSampleCaptcha();
+        displayUrl = sample.url;
+        opts.knownText = sample.text;
+      }
+
+      shownUrlEl.textContent = displayUrl;
+
+      const processingUrl = (!displayUrl.startsWith('data:') && useProxy) ? proxiedImageUrl(displayUrl) : displayUrl;
+
+      await new Promise((resolve, reject) => {
+        img.onload = () => resolve();
+        img.onerror = (e) => reject(new Error('Failed to load image.'));
+        img.crossOrigin = 'anonymous';
+        img.src = displayUrl;
+      });
+
+      // Draw and preprocess
+      const canvas = drawToCanvas(img, 80);
+      try { canvas.getContext('2d'); } catch {}
+      binarizeCanvas(canvas);
+
+      // Recognize from preprocessed canvas
+      let result, cleaned;
+      try {
+        logStatus('Starting OCR (preprocessed)...');
+        result = await recognizeWithTesseract(procCanvas);
+        cleaned = cleanText(result.text);
+        if (cleaned) {
+          setResult(cleaned);
+          document.getElementById('duration').textContent = `Time: ${(result.durationMs/1000).toFixed(2)}s`;
+          return cleaned;
+        }
+      } catch (e) {
+        logStatus('Error during OCR on preprocessed image: ' + (e && e.message ? e.message : e));
+      }
+
+      // Fallback: recognize original image (possibly via proxy to avoid CORS)
+      try {
+        logStatus('Fallback OCR (original image)...');
+        const res2 = await recognizeWithTesseract(processingUrl);
+        const cleaned2 = cleanText(res2.text);
+        setResult(cleaned2 || '—');
+        document.getElementById('duration').textContent = `Time: ${(res2.durationMs/1000).toFixed(2)}s`;
+        return cleaned2;
+      } catch (e) {
+        logStatus('Error during fallback OCR: ' + (e && e.message ? e.message : e));
+        setResult('—');
+      }
+    }
+
+    // Wire up UI
+    const urlInput = document.getElementById('url');
+    const solveBtn = document.getElementById('solveBtn');
+    const sampleBtn = document.getElementById('sampleBtn');
+    const useProxyEl = document.getElementById('useProxy');
+    const shownUrlEl = document.getElementById('shownUrl');
+
+    solveBtn.addEventListener('click', async () => {
+      const url = urlInput.value.trim();
+      setParam('url', url || '');
+      solveBtn.disabled = true;
+      try {
+        await solve(url, { useProxy: useProxyEl.checked });
+      } finally {
+        solveBtn.disabled = false;
+      }
+    });
+
+    sampleBtn.addEventListener('click', async () => {
+      setParam('url', '');
+      urlInput.value = '';
+      solveBtn.disabled = true;
+      try {
+        await solve('', { useProxy: false });
+      } finally {
+        solveBtn.disabled = false;
+      }
+    });
+
+    // Auto-run on load
+    (async function init() {
+      const qUrl = getParam('url') || '';
+      if (qUrl) urlInput.value = qUrl;
+      solveBtn.disabled = true;
+      try {
+        await solve(qUrl, { useProxy: true });
+      } finally {
+        solveBtn.disabled = false;
+      }
+    })();
+  </script>
+</body>
+</html>
